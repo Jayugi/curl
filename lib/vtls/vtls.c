@@ -63,6 +63,7 @@
 #include "warnless.h"
 #include "curl_base64.h"
 #include "curl_printf.h"
+#include "strdup.h"
 
 /* The last #include files should be: */
 #include "curl_memory.h"
@@ -82,6 +83,43 @@
   else                                       \
     dest->var = NULL;
 
+#define CLONE_BLOB(var)                         \
+  if(blobdup(&dest->var, source->var))         \
+    return FALSE;
+
+static CURLcode blobdup(struct curl_blob **dest,
+                        struct curl_blob *src)
+{
+  DEBUGASSERT(dest);
+  DEBUGASSERT(!*dest);
+  if(src) {
+    /* only if there's data to dupe! */
+    struct curl_blob *d;
+    d = malloc(sizeof(struct curl_blob) + src->len);
+    if(!d)
+      return CURLE_OUT_OF_MEMORY;
+    d->len = src->len;
+    /* Always duplicate because the connection may survive longer than the
+       handle that passed in the blob. */
+    d->flags = CURL_BLOB_COPY;
+    d->data = (void *)((char *)d + sizeof(struct curl_blob));
+    *dest = d;
+  }
+  return CURLE_OK;
+}
+
+/* returns TRUE if the blobs are identical */
+static bool blobcmp(struct curl_blob *first, struct curl_blob *second)
+{
+  if(!first && !second) /* both are NULL */
+    return TRUE;
+  if(!first || !second) /* one is NULL */
+    return FALSE;
+  if(first->len != second->len) /* different sizes */
+    return FALSE;
+  return !memcmp(first->data, second->data, first->len); /* same data */
+}
+
 bool
 Curl_ssl_config_matches(struct ssl_primary_config *data,
                         struct ssl_primary_config *needle)
@@ -91,6 +129,7 @@ Curl_ssl_config_matches(struct ssl_primary_config *data,
      (data->verifypeer == needle->verifypeer) &&
      (data->verifyhost == needle->verifyhost) &&
      (data->verifystatus == needle->verifystatus) &&
+     blobcmp(data->cert_blob, needle->cert_blob) &&
      Curl_safe_strcasecompare(data->CApath, needle->CApath) &&
      Curl_safe_strcasecompare(data->CAfile, needle->CAfile) &&
      Curl_safe_strcasecompare(data->clientcert, needle->clientcert) &&
@@ -115,6 +154,7 @@ Curl_clone_primary_ssl_config(struct ssl_primary_config *source,
   dest->verifystatus = source->verifystatus;
   dest->sessionid = source->sessionid;
 
+  CLONE_BLOB(cert_blob);
   CLONE_STRING(CApath);
   CLONE_STRING(CAfile);
   CLONE_STRING(clientcert);
@@ -127,6 +167,10 @@ Curl_clone_primary_ssl_config(struct ssl_primary_config *source,
   return TRUE;
 }
 
+#define FREE_BLOB(v)                            \
+  if((v) && (v->flags & CURL_BLOB_COPY))        \
+    Curl_safefree(v->data);
+
 void Curl_free_primary_ssl_config(struct ssl_primary_config *sslc)
 {
   Curl_safefree(sslc->CApath);
@@ -137,6 +181,7 @@ void Curl_free_primary_ssl_config(struct ssl_primary_config *sslc)
   Curl_safefree(sslc->cipher_list);
   Curl_safefree(sslc->cipher_list13);
   Curl_safefree(sslc->pinned_key);
+  FREE_BLOB(sslc->cert_blob);
 }
 
 #ifdef USE_SSL
